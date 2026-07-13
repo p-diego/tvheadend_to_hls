@@ -547,6 +547,56 @@ def _first_name_match(text):
     return None, 0
 
 
+# TVHeadend component "type" strings that denote a video elementary stream.
+# Most contain "VIDEO" (MPEG2VIDEO, MPEG4VIDEO) and are caught by substring;
+# the codec-named ones (H264, HEVC, …) need the explicit set.
+_VIDEO_TYPES = {
+    "H264", "HEVC", "H265", "MPEG2VIDEO", "MPEG4VIDEO", "MPEG4",
+    "VP8", "VP9", "AV1",
+}
+_AUDIO_TYPES = {"AAC", "AC3", "EAC3", "MP2", "MP3"}
+
+
+def _stream_is_video(stype):
+    return "VIDEO" in stype or stype in _VIDEO_TYPES
+
+
+def _stream_is_audio(stype):
+    return "AUDIO" in stype or stype in _AUDIO_TYPES
+
+
+def service_av(channel, services_by_uuid):
+    """Inspect a channel's linked services for video/audio elementary streams.
+
+    Returns (has_video, has_audio):
+      - has_video is True/False when stream metadata is present, or None when no
+        stream metadata is available at all (so callers can default to "assume
+        video" and avoid misclassifying TV channels with sparse metadata).
+      - has_audio is True/False (False also when metadata is absent).
+    """
+    if not services_by_uuid:
+        return None, False
+    has_video = False
+    has_audio = False
+    saw_any_stream = False
+    for su in channel.get("services") or []:
+        svc = services_by_uuid.get(su)
+        if not svc:
+            continue
+        # TVHeadend uses "stream" or "streams" depending on version.
+        streams = svc.get("stream") or svc.get("streams") or []
+        for s in streams:
+            saw_any_stream = True
+            stype = (s.get("type") or "").upper()
+            if _stream_is_video(stype):
+                has_video = True
+            elif _stream_is_audio(stype):
+                has_audio = True
+    if not saw_any_stream:
+        return None, False
+    return has_video, has_audio
+
+
 def _audio_lang_country(channel, services_by_uuid):
     if not services_by_uuid:
         return None

@@ -1,4 +1,5 @@
 import html
+import json
 import threading
 
 import uvicorn
@@ -39,6 +40,16 @@ def load_state():
             epg[channel_uuid] = tv_channel_epg(channel_uuid, event)
     print("Loaded %d EPG channel feeds" % len(epg))
 
+    # Flag every channel that has EPG at startup. The background loop refetches
+    # fresh events for flagged channels once they run out.
+    flagged = 0
+    for channel in channel_list:
+        feed = epg.get(channel.tvh_uuid)
+        if feed is not None and feed.has_events():
+            channel.had_epg = True
+            flagged += 1
+    print("Flagged %d channels as EPG-bearing" % flagged)
+
 
 app = FastAPI()
 
@@ -74,6 +85,8 @@ def _render_epg_entry(ev):
 def _render_channel_block(service, n_entries=3):
     """Render one channel as: <h3>Name link</h3> + <table> of EPG entries + 'full EPG' link."""
     name = service.name
+    if getattr(service, "audio_only", False):
+        name = name + " 📻"
     if service.stream:
         name = name + " 👀"
     uuid = service.hls_uuid
@@ -162,7 +175,7 @@ async def read_root(list_name: str = Query("", alias="list")):
         data += " &mdash; " + html.escape(active)
     data += "</h1>"
     if config["top_channel_lists"]:
-        data += '<p class="lists">Lists: <a href="/">default</a>'
+        data += '<p class="lists">Lists: <a href="./">default</a>'
         for n in sorted(config["top_channel_lists"]):
             data += ' | <a href="?list=' + html.escape(n) + '">' + html.escape(n) + "</a>"
         data += "</p>"
@@ -240,7 +253,11 @@ async def read_m3u8(uuid: str = "", stream_id: int = -1):
     channel = channel_hash[uuid]
     res = channel.start_stream()
     if not res:
-        return Response(content="NIX", media_type="text/plain;charset=utf-8")
+        return Response(
+            content="Temporarily unavailable",
+            media_type="text/plain;charset=utf-8",
+            status_code=503,
+        )
 
     suffix = ""
     if stream_id >= 0:
@@ -272,49 +289,62 @@ def player_page(uri: str = "", name: str = "", channel_uuid: str = ""):
     <center>
       <h1>%s</h1>
       <video width="100%%" id="video" controls></video>
-      <div><small>Currently: <span id="variant-info">…</span></small></div>
+      <div><small><span id="variant-info">Waiting for stream to start…</span></small></div>
     </center>
 
     <script>
+      var uri = %s;
       var video = document.getElementById('video');
       function fmtRate(bps) { return (bps/1000000).toFixed(1) + ' Mbps'; }
       function showLevel(lvl) {
         document.getElementById('variant-info').textContent =
           lvl.height + 'p · ' + fmtRate(lvl.bitrate);
       }
-      if (Hls.isSupported()) {
-        var hls = new Hls({
-          debug: true,
-        });
-        hls.loadSource('%s');
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MEDIA_ATTACHED, function () {
-          video.muted=true;
-          setTimeout(startPlayer, 5000)
-        });
-        hls.on(Hls.Events.LEVEL_SWITCHED, function (e, data) {
-          showLevel(hls.levels[data.level]);
-        });
-      }
-      else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = '%s';
-        video.addEventListener('canplay', function () {
-          video.muted=true;
-          setTimeout(startPlayer, 5000)
-        });
-        // Native HLS: only resolution is available on the <video> element.
-        video.addEventListener('resize', function () {
-          document.getElementById('variant-info').textContent =
-            video.videoHeight + 'p';
-        });
-      }
-
       function startPlayer() {
         video.play()
       }
+
+      function startHls() {
+        document.getElementById('variant-info').textContent = '';
+        if (Hls.isSupported()) {
+          var hls = new Hls({
+            debug: true,
+          });
+          hls.loadSource(uri);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MEDIA_ATTACHED, function () {
+            video.muted=true;
+            setTimeout(startPlayer, 5000)
+          });
+          hls.on(Hls.Events.LEVEL_SWITCHED, function (e, data) {
+            showLevel(hls.levels[data.level]);
+          });
+        }
+        else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = uri;
+          video.addEventListener('canplay', function () {
+            video.muted=true;
+            setTimeout(startPlayer, 5000)
+          });
+          // Native HLS: only resolution is available on the <video> element.
+          video.addEventListener('resize', function () {
+            document.getElementById('variant-info').textContent =
+              video.videoHeight + 'p';
+          });
+        }
+      }
+
+      // Fetching the playlist is what actually triggers ffmpeg to start on the
+      // server; keep polling until it succeeds, then hand off to the player.
+      function pollAndStart() {
+        fetch(uri, {cache: 'no-store'}).then(function (r) {
+          if (r.ok) { startHls(); } else { setTimeout(pollAndStart, 2000); }
+        }).catch(function () { setTimeout(pollAndStart, 2000); });
+      }
+      pollAndStart();
     </script>
-''' % (html.escape(name), uri, uri)
-    data += '<br><a href="%s">URL for use with VLC</a>' % uri
+''' % (html.escape(name), json.dumps(uri))
+    data += '<br><a href="%s" rel="nofollow">URL for use with VLC</a>' % html.escape(uri)
     if channel_uuid:
         data += ' &middot; <a href="epg?uuid=%s">EPG</a>' % html.escape(channel_uuid)
         data += ' &middot; <a href="./">‹ all channels</a>'
@@ -328,18 +358,8 @@ async def read_stream(uuid: str = ""):
     if uuid not in channel_hash:
         return Response(content="NIX", media_type="text/plain;charset=utf-8")
     channel = channel_hash[uuid]
-    res = channel.start_stream()
-    if res:
-        return player_page(res, channel.name, channel.hls_uuid)
-    data = (
-        '<html><head><title>Bitte warten</title>'
-        '<meta http-equiv="refresh" content="1"></head>'
-        '<body>'
-        'Please wait while the stream is starting. This can take 30 seconds or more. '
-        'This page will meanwhile reload.'
-        '</body></html>'
-    )
-    return Response(content=data, media_type="text/html;charset=utf-8")
+    uri = "stream.m3u8?uuid=" + channel.hls_uuid
+    return player_page(uri, channel.name, channel.hls_uuid)
 
 
 @app.on_event("startup")

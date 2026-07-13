@@ -3,7 +3,7 @@ FROM debian:bookworm
 WORKDIR /tvh_to_hls
 
 RUN apt-get update &&\
-	apt-get -y install python3 python3-uvicorn python3-fastapi python3-requests nginx ffmpeg
+	apt-get -y install python3 python3-uvicorn python3-fastapi python3-requests nginx ffmpeg fonts-dejavu-core
 
 COPY ./src/tvhtohls/ ./tvhtohls/
 COPY ./entrypoint.sh ./

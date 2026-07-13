@@ -63,4 +63,17 @@ All of these can be set in `.env` as well.
 
 - `vaapi_device` — render node to probe / use. Default `/dev/dri/renderD128`.
 
+- `include_radio` — set to `true` (or `1`/`yes`/`on`) to list radio / audio-only
+  channels, which are hidden by default. Audio-only services have no video, so
+  the app synthesizes a low-bandwidth black video carrying the channel name
+  (using `drawtext`) and muxes it with the source audio — this keeps the normal
+  HLS pipeline and the `<video>` player working unchanged. Such channels are
+  marked with 📻 in the list. The same dummy-video path is used for any service
+  that has audio but no video, even if it isn't tagged as radio.
+
+- `dummy_video_size`, `dummy_video_fps`, `dummy_video_bitrate`, `dummy_video_font`
+  — tune the synthesized video for audio-only channels. Defaults: `320x180`,
+  `10` fps, `64k` (accepts `100k`/`3M`/plain bps), and the DejaVu Sans font
+  shipped in the image (`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`).
+
 The default `compose.yaml` passes `/dev/dri` into the container so the auto-detect can find the GPU. If your host has no GPU and that mapping fails at `docker compose up`, delete the `devices:` and `group_add:` stanzas in `compose.yaml`.

@@ -52,6 +52,20 @@ config["min_bitrate"] = _parse_bitrate(os.environ.get("min_bitrate", "100k"))
 config["max_bitrate"] = _parse_bitrate(os.environ.get("max_bitrate", "3M"))
 config["num_streams"] = max(1, int(os.environ.get("num_streams", "4")))
 
+# Radio / audio-only support. Radio channels are hidden unless include_radio is
+# enabled. Audio-only services (radio, or any service with audio but no video)
+# get a synthesized low-bandwidth black video carrying the channel name so the
+# normal HLS pipeline and the <video> player keep working unchanged.
+config["include_radio"] = os.environ.get("include_radio", "").lower() in (
+    "1", "true", "yes", "on"
+)
+config["dummy_video_size"] = os.environ.get("dummy_video_size", "320x180")
+config["dummy_video_fps"] = int(os.environ.get("dummy_video_fps", "10"))
+config["dummy_video_bitrate"] = _parse_bitrate(os.environ.get("dummy_video_bitrate", "64k"))
+config["dummy_video_font"] = os.environ.get(
+    "dummy_video_font", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+)
+
 
 def _detect_vaapi(device):
     """True if the VAAPI render node exists and we can open it for reading."""

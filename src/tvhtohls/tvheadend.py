@@ -5,7 +5,7 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 from .config import config, tvh_base_url
-from .flags import guess_country
+from .flags import guess_country, service_av
 from .streams import TVChannel
 
 
@@ -40,11 +40,16 @@ def clean_name(name):
 
 
 class tv_channel_epg:
+    # When a flagged channel has run dry, don't refetch from TVHeadend more
+    # often than this (seconds) — the background loop ticks every second and we
+    # don't want to hammer the server while it genuinely has no fresh events.
+    REFETCH_INTERVAL = 60
+
     def __init__(self, uuid, event_hash):
         self.uuid = uuid
         self.now = None
         self.events = {}
-        self.last_update = time.time()
+        self.last_fetch = time.time()
         self.add(event_hash)
 
     def add(self, event_hash):
@@ -61,8 +66,9 @@ class tv_channel_epg:
         ):
             self.now = eventid
 
-    def update(self):
-        """Drop ended events; if `self.now` no longer points at a valid event, refetch."""
+    def _prune(self):
+        """Drop events that have already ended, advancing `self.now` along the
+        chain. Leaves `self.now = None` when no current event remains."""
         while (
             self.now is not None
             and self.now in self.events
@@ -71,15 +77,38 @@ class tv_channel_epg:
             ev = self.events[self.now]
             del self.events[self.now]
             self.now = ev.get("nextEventId")
-        if self.now in self.events:
-            return False
+        if self.now not in self.events:
+            self.now = None
+
+    def has_events(self):
+        """True if a current/upcoming event remains after pruning ended ones."""
+        self._prune()
+        return self.now is not None
+
+    def refetch(self, n=20):
+        """Fetch fresh EPG events for this channel from TVHeadend."""
+        self.last_fetch = time.time()  # set first so the throttle holds even on error
         epg_json = tvheadend_get(
-            tvh_base_url + "/api/epg/events/grid?limit=10&channel=" + self.uuid
+            tvh_base_url
+            + "/api/epg/events/grid?limit=" + str(max(n, 20))
+            + "&channel=" + self.uuid
         )
         for event in epg_json["entries"]:
             if event["channelUuid"] == self.uuid:
                 self.add(event)
-        return True
+
+    def update(self):
+        """Prune ended events; if the channel has run dry, refetch (throttled).
+
+        Returns True if a current event remains afterwards.
+        """
+        self._prune()
+        if self.now is None and time.time() - self.last_fetch >= self.REFETCH_INTERVAL:
+            try:
+                self.refetch()
+            except Exception:
+                pass
+        return self.now is not None
 
     def _upcoming(self, n):
         out = []
@@ -92,20 +121,13 @@ class tv_channel_epg:
     def get_entries(self, n):
         """Up to n upcoming events; refetches from TVHeadend if fewer are linked."""
         try:
-            self.update()
+            self._prune()
         except Exception:
             pass
         entries = self._upcoming(n)
-        if len(entries) < n:
+        if len(entries) < n and time.time() - self.last_fetch >= self.REFETCH_INTERVAL:
             try:
-                epg_json = tvheadend_get(
-                    tvh_base_url
-                    + "/api/epg/events/grid?limit=" + str(max(n, 20))
-                    + "&channel=" + self.uuid
-                )
-                for event in epg_json["entries"]:
-                    if event["channelUuid"] == self.uuid:
-                        self.add(event)
+                self.refetch(n)
             except Exception:
                 pass
             entries = self._upcoming(n)
@@ -169,7 +191,8 @@ def tvheadend_get_channel_list():
         if _should_skip(name):
             continue
         tag_ids = channel.get("tags") or []
-        if radio_tag is not None and radio_tag in tag_ids:
+        is_radio = radio_tag is not None and radio_tag in tag_ids
+        if is_radio and not config["include_radio"]:
             continue
 
         tag_display_names = []
@@ -186,9 +209,13 @@ def tvheadend_get_channel_list():
         providers = _channel_providers(channel, services_by_uuid)
         provider = ", ".join(providers) if providers else None
         country = guess_country(channel, services_by_uuid, tag_display_names, provider=provider)
+        # Synthesize a dummy video only with positive evidence of audio-without-video
+        # (or an explicit Radio tag). Unknown metadata → treat as a normal TV channel.
+        has_video, has_audio = service_av(channel, services_by_uuid)
+        audio_only = is_radio or (has_video is False and has_audio)
         channel_list.append(TVChannel(
             name, tags, channel["number"], channel["uuid"], clean_name(name),
-            country=country, provider=provider,
+            country=country, provider=provider, audio_only=audio_only,
         ))
 
     by_hls_uuid = {ch.hls_uuid: ch for ch in channel_list}
