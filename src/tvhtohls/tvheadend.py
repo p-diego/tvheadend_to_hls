@@ -9,10 +9,20 @@ from .flags import guess_country, service_av
 from .streams import TVChannel
 
 
+# requests has no default timeout: without one, a slow/unresponsive TVHeadend
+# hangs this call forever. Since check_status's background loop is single
+# threaded, a hung EPG refetch for any one channel freezes the idle-kill sweep
+# for every channel, so ffmpeg never gets stopped even when nothing accessed
+# its playlist.
+TVHEADEND_TIMEOUT = 10
+
+
 def tvheadend_get(url):
     """GET a TVHeadend JSON endpoint and return the parsed body."""
     req = requests.get(
-        url, auth=HTTPDigestAuth(config["tvheadend_user"], config["tvheadend_pass"])
+        url,
+        auth=HTTPDigestAuth(config["tvheadend_user"], config["tvheadend_pass"]),
+        timeout=TVHEADEND_TIMEOUT,
     )
     req.encoding = "UTF-8"
     if req.status_code != 200:
