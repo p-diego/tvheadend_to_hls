@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import subprocess
 import time
 import traceback
@@ -231,13 +232,32 @@ class TVChannel:
     def clean_stream(self):
         base = config["hls_local_path"]
         for f in os.listdir(base):
-            if f.startswith(self.hls_uuid):
-                os.remove(base + "/" + f)
+            if _owns_file(self.hls_uuid, f):
+                try:
+                    os.remove(base + "/" + f)
+                except OSError:
+                    pass
         self.stream = None
 
 
 ORPHAN_SWEEP_INTERVAL = 60   # seconds between directory-wide orphan sweeps
 ORPHAN_GRACE_SECONDS = 15    # skip files younger than this (mid-start safety margin)
+
+
+_OWNED_SUFFIX_RE = re.compile(r"\A(\.m3u8(\+\d+)?|\.txt|_\d+_\d+\.ts)\Z")
+
+
+def _owns_file(hls_uuid, filename):
+    """True if `filename` is one of the files start_stream() generates for `hls_uuid`.
+
+    A bare startswith() would also match a *different* channel whose uuid
+    happens to be a string prefix of this one (e.g. "PROSIEBEN" is a prefix of
+    "PROSIEBEN_MAXX", and "ARD" of "ARD-alpha" -> "ARDALPHA") — check the
+    remainder against the exact suffixes our own filenames use instead.
+    """
+    if not filename.startswith(hls_uuid):
+        return False
+    return bool(_OWNED_SUFFIX_RE.match(filename[len(hls_uuid):]))
 
 
 def _sweep_orphan_files(channel_list):
@@ -253,7 +273,7 @@ def _sweep_orphan_files(channel_list):
     except OSError:
         return
     for f in entries:
-        owned = any(ch.stream is not None and f.startswith(ch.hls_uuid) for ch in channel_list)
+        owned = any(ch.stream is not None and _owns_file(ch.hls_uuid, f) for ch in channel_list)
         if owned:
             continue
         path = base + "/" + f
