@@ -53,7 +53,7 @@ class tv_channel_epg:
     # When a flagged channel has run dry, don't refetch from TVHeadend more
     # often than this (seconds) — the background loop ticks every second and we
     # don't want to hammer the server while it genuinely has no fresh events.
-    REFETCH_INTERVAL = 60
+    REFETCH_INTERVAL = 3600
 
     def __init__(self, uuid, event_hash):
         self.uuid = uuid
