@@ -1,6 +1,8 @@
+import asyncio
 import html
 import json
 import threading
+import time
 
 import uvicorn
 from fastapi import FastAPI, Query, Response
@@ -11,6 +13,10 @@ from .flags import country_name, flag_emoji
 from .streams import check_status
 from .tvheadend import tv_channel_epg, tvheadend_get, tvheadend_get_channel_list
 
+
+# How long a client may wait for a cold encoder before we give up on it.
+STREAM_START_TIMEOUT = 15.0
+STREAM_START_POLL = 0.25
 
 # Globally accessible state populated by load_state() at startup.
 channel_list = []
@@ -251,7 +257,21 @@ async def read_m3u8(uuid: str = "", stream_id: int = -1):
     if uuid not in channel_hash:
         return Response(content="NIX", media_type="text/plain;charset=utf-8")
     channel = channel_hash[uuid]
+    # ffmpeg needs a couple of seconds to emit the first segments, and the
+    # idle reaper kills encoders after 30s, so a cold start is the normal case
+    # rather than a rare one. Answering 503 straight away breaks players that
+    # treat it as fatal: the Fire TV media pipeline closes the stream and never
+    # retries. Wait for the playlist instead, bounded so a broken encoder can
+    # never hold the connection open.
+    #
+    # The wait belongs here and not in start_stream(): this route is async and
+    # shares one event loop with every other channel, so it has to yield with
+    # asyncio.sleep rather than block.
     res = channel.start_stream()
+    deadline = time.monotonic() + STREAM_START_TIMEOUT
+    while not res and time.monotonic() < deadline:
+        await asyncio.sleep(STREAM_START_POLL)
+        res = channel.start_stream()
     if not res:
         return Response(
             content="Temporarily unavailable",
