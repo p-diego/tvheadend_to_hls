@@ -26,6 +26,20 @@ epg = {}               # tvh_uuid → tv_channel_epg
 main_thread = None
 
 
+def resolve_channel(uuid):
+    """Look a channel up by either identifier, or return None.
+
+    hls_uuid is derived from the channel name, so it changes whenever a channel
+    is renamed, and its "-N" suffix for duplicate names depends on the order
+    channels happen to be scanned in — two identically named channels can swap
+    identifiers silently. tvh_uuid is TVHeadend's own opaque id: stable and
+    unique. Accept both so callers that already hold the TVHeadend id (an M3U
+    tvg-id, for instance) need no lookup table, while existing name-based URLs
+    keep working.
+    """
+    return channel_hash.get(uuid) or tvh_uuid_hash.get(uuid)
+
+
 def load_state():
     """Fetch channels + EPG from TVHeadend and populate the module-level state dicts."""
     channels, by_hls_uuid = tvheadend_get_channel_list()
@@ -216,9 +230,9 @@ async def read_root(list_name: str = Query("", alias="list")):
 
 @app.get("/epg")
 async def read_epg(uuid: str = ""):
-    if uuid not in channel_hash:
+    channel = resolve_channel(uuid)
+    if channel is None:
         return Response(content="NIX", media_type="text/plain;charset=utf-8")
-    channel = channel_hash[uuid]
     tvh_uuid = channel.tvh_uuid
     if tvh_uuid not in epg:
         try:
@@ -254,9 +268,9 @@ async def read_epg(uuid: str = ""):
 
 @app.get("/stream.m3u8")
 async def read_m3u8(uuid: str = "", stream_id: int = -1):
-    if uuid not in channel_hash:
+    channel = resolve_channel(uuid)
+    if channel is None:
         return Response(content="NIX", media_type="text/plain;charset=utf-8")
-    channel = channel_hash[uuid]
     # ffmpeg needs a couple of seconds to emit the first segments, and the
     # idle reaper kills encoders after 30s, so a cold start is the normal case
     # rather than a rare one. Answering 503 straight away breaks players that
@@ -375,9 +389,9 @@ def player_page(uri: str = "", name: str = "", channel_uuid: str = ""):
 
 @app.get("/stream")
 async def read_stream(uuid: str = ""):
-    if uuid not in channel_hash:
+    channel = resolve_channel(uuid)
+    if channel is None:
         return Response(content="NIX", media_type="text/plain;charset=utf-8")
-    channel = channel_hash[uuid]
     uri = "stream.m3u8?uuid=" + channel.hls_uuid
     return player_page(uri, channel.name, channel.hls_uuid)
 
