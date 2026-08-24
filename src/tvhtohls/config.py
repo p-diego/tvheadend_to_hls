@@ -51,6 +51,14 @@ def _parse_bitrate(s):
 config["min_bitrate"] = _parse_bitrate(os.environ.get("min_bitrate", "100k"))
 config["max_bitrate"] = _parse_bitrate(os.environ.get("max_bitrate", "3M"))
 config["num_streams"] = max(1, int(os.environ.get("num_streams", "4")))
+# The stream-copy variant republishes the source untouched. That is free on the
+# server but hands the client whatever the broadcaster sent — which may be
+# interlaced, or carry an audio codec the device cannot decode. Its advertised
+# bandwidth is also a guess, so an ABR player can pick it believing it to be the
+# cheapest rung. Default keeps the historical behaviour.
+config["include_copy"] = os.environ.get("include_copy", "1").lower() not in (
+    "0", "false", "no", "off"
+)
 
 # Radio / audio-only support. Radio channels are hidden unless include_radio is
 # enabled. Audio-only services (radio, or any service with audio but no video)

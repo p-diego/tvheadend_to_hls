@@ -56,7 +56,8 @@ def build_codecs():
     Returns (hwaccel_args, video_args, n_outputs, var_stream_map):
       - hwaccel_args: input-side flags (before -i)
       - video_args: -filter_complex + per-output -map / -c:v / -b:v sequences,
-        ending with a 'copy' output that packet-copies the source video
+        ending with a 'copy' output that packet-copies the source video,
+        unless config["include_copy"] is false
       - n_outputs: total number of video outputs (transcoded + copy)
       - var_stream_map: value for ffmpeg's -var_stream_map (HLS master)
 
@@ -106,9 +107,11 @@ def build_codecs():
             "-b:v:%d" % i, str(bps),
         ]
     # Stream-copy variant: packet-copies the source so no GPU/CPU encoding needed.
-    copy_idx = n_scaled
-    video_args += ["-map", "0:v:0", "-c:v:%d" % copy_idx, "copy"]
-    n_outputs = n_scaled + 1
+    n_outputs = n_scaled
+    if config["include_copy"]:
+        copy_idx = n_scaled
+        video_args += ["-map", "0:v:0", "-c:v:%d" % copy_idx, "copy"]
+        n_outputs += 1
 
     var_stream_map = ", ".join(
         "v:%d,a:%d" % (i, i) for i in range(n_outputs)
