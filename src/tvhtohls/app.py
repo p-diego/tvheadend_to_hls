@@ -6,6 +6,7 @@ import time
 
 import uvicorn
 from fastapi import FastAPI, Query, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import config, tvh_base_url
@@ -264,6 +265,41 @@ async def read_epg(uuid: str = ""):
         data += "</table>"
     data += _TIME_SCRIPT + "</body></html>"
     return Response(content=data, media_type="text/html;charset=utf-8")
+
+
+@app.get("/epg.json")
+async def read_epg_json(uuid: str = "", n: int = 2):
+    """What is on now and next, as JSON.
+
+    The HTML /epg page is meant for a browser and runs to tens of kilobytes.
+    A client that only wants to caption a channel needs the fields, not the
+    markup — and an app on the TV cannot read TVHeadend's own EPG API anyway,
+    because a persistent auth token is refused on /api.
+
+    Absent fields are omitted rather than sent empty: TVHeadend fills title
+    almost always, subtitle and description only about six times in ten.
+    """
+    channel = resolve_channel(uuid)
+    if channel is None:
+        return JSONResponse(content={"error": "unknown channel"}, status_code=404)
+
+    feed = epg.get(channel.tvh_uuid)
+    events = []
+    if feed is not None:
+        for event in feed.get_entries(max(1, min(n, 10))):
+            trimmed = {
+                key: event[key]
+                for key in ("title", "subtitle", "description", "start", "stop")
+                if event.get(key)
+            }
+            if trimmed:
+                events.append(trimmed)
+
+    return JSONResponse(content={
+        "uuid": channel.tvh_uuid,
+        "name": channel.name,
+        "events": events,
+    })
 
 
 @app.get("/stream.m3u8")
